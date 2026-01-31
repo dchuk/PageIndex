@@ -1740,6 +1740,502 @@ Agent implements:
 
 ---
 
+## Alternative Architecture: Cross-Docpack Meta-Tree
+
+Instead of PageIndex per-dependency, we can use **qmd as the unified search layer** across ALL documentation, with **PageIndex as a meta-navigation tree** that helps agents decide which docpacks to search.
+
+### The Insight
+
+| Current Approach | Meta-Tree Approach |
+|-----------------|-------------------|
+| PageIndex per dependency (code) | qmd indexes ALL docs across ALL dependencies |
+| qmd per dependency (docs) | PageIndex creates ONE tree across all docpacks |
+| Agent searches one dependency at a time | Agent navigates to find the RIGHT dependency |
+
+**Key Question the Meta-Tree Answers**: "Which dependency should I look at for this task?"
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      CROSS-DOCPACK META-TREE ARCHITECTURE                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        DOCUMENTATION LAYER (qmd)                         │    │
+│  │                     Single index across ALL docpacks                     │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  qmd collection: "project-deps"                                         │    │
+│  │                                                                         │    │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐       │    │
+│  │  │   axios     │ │ react-query │ │     zod     │ │   lodash    │       │    │
+│  │  │   docs/     │ │   docs/     │ │   docs/     │ │   docs/     │       │    │
+│  │  │             │ │             │ │             │ │             │       │    │
+│  │  │ • guides    │ │ • queries   │ │ • schemas   │ │ • arrays    │       │    │
+│  │  │ • api-ref   │ │ • mutations │ │ • inference │ │ • objects   │       │    │
+│  │  │ • examples  │ │ • caching   │ │ • errors    │ │ • functions │       │    │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘       │    │
+│  │         │               │               │               │              │    │
+│  │         └───────────────┴───────────────┴───────────────┘              │    │
+│  │                                   │                                     │    │
+│  │                         Unified semantic search                         │    │
+│  │                    "How do I validate API responses?"                   │    │
+│  │                                   │                                     │    │
+│  │                    Returns results from: zod, axios, react-query        │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       ▲                                          │
+│                                       │                                          │
+│                              Bidirectional links                                 │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                      META-NAVIGATION LAYER (PageIndex)                   │    │
+│  │                  Hierarchical tree across ALL docpacks                   │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  docpack_tree.json                                                      │    │
+│  │  │                                                                      │    │
+│  │  ├── HTTP & Networking                                                  │    │
+│  │  │   ├── axios [summary: "Promise-based HTTP client..."]               │    │
+│  │  │   │   ├── Request Configuration                                      │    │
+│  │  │   │   ├── Response Handling                                          │    │
+│  │  │   │   ├── Interceptors                                               │    │
+│  │  │   │   └── Error Handling                                             │    │
+│  │  │   └── ky [summary: "Tiny HTTP client based on fetch..."]            │    │
+│  │  │                                                                      │    │
+│  │  ├── Data Fetching & Caching                                            │    │
+│  │  │   ├── react-query [summary: "Async state management..."]            │    │
+│  │  │   │   ├── Queries                                                    │    │
+│  │  │   │   ├── Mutations                                                  │    │
+│  │  │   │   └── Cache Invalidation                                         │    │
+│  │  │   └── swr [summary: "React hooks for data fetching..."]             │    │
+│  │  │                                                                      │    │
+│  │  ├── Validation & Schemas                                               │    │
+│  │  │   ├── zod [summary: "TypeScript-first schema validation..."]        │    │
+│  │  │   │   ├── Basic Types                                                │    │
+│  │  │   │   ├── Object Schemas                                             │    │
+│  │  │   │   ├── Transformations                                            │    │
+│  │  │   │   └── Error Handling                                             │    │
+│  │  │   └── yup [summary: "Schema builder for validation..."]             │    │
+│  │  │                                                                      │    │
+│  │  └── Utilities                                                          │    │
+│  │      ├── lodash [summary: "Utility library for arrays..."]             │    │
+│  │      └── date-fns [summary: "Modern date utility library..."]          │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Meta-Tree Structure
+
+```json
+{
+  "tree_name": "project-dependencies",
+  "generated_at": "2024-01-15T10:30:00Z",
+  "total_docpacks": 12,
+  "total_docs": 847,
+
+  "structure": [
+    {
+      "title": "HTTP & Networking",
+      "node_id": "cat-001",
+      "type": "category",
+      "summary": "Libraries for making HTTP requests, handling responses, and managing network communication",
+      "nodes": [
+        {
+          "title": "axios",
+          "node_id": "dep-axios",
+          "type": "docpack",
+          "summary": "Promise-based HTTP client for browser and node.js with interceptors, transforms, and cancellation",
+          "metadata": {
+            "version": "1.6.0",
+            "doc_count": 23,
+            "qmd_collection": "project-deps",
+            "qmd_path_prefix": "axios/",
+            "primary_use_cases": [
+              "REST API calls",
+              "Request/response interceptors",
+              "File uploads",
+              "Request cancellation"
+            ],
+            "related_deps": ["react-query", "ky"]
+          },
+          "nodes": [
+            {
+              "title": "Request Configuration",
+              "node_id": "axios-config",
+              "type": "topic",
+              "summary": "How to configure requests: headers, params, timeout, auth",
+              "qmd_docs": ["axios/guides/config.md", "axios/api/request-config.md"],
+              "keywords": ["headers", "params", "timeout", "baseURL", "auth"]
+            },
+            {
+              "title": "Interceptors",
+              "node_id": "axios-interceptors",
+              "type": "topic",
+              "summary": "Request and response interceptors for logging, auth, error handling",
+              "qmd_docs": ["axios/guides/interceptors.md"],
+              "keywords": ["interceptors", "middleware", "request transform", "response transform"],
+              "code_links": [
+                {"node_id": "0023", "symbol": "InterceptorManager"}
+              ]
+            },
+            {
+              "title": "Error Handling",
+              "node_id": "axios-errors",
+              "type": "topic",
+              "summary": "Handling network errors, status codes, and response validation",
+              "qmd_docs": ["axios/guides/error-handling.md"],
+              "keywords": ["errors", "catch", "status codes", "network errors"]
+            }
+          ]
+        },
+        {
+          "title": "ky",
+          "node_id": "dep-ky",
+          "type": "docpack",
+          "summary": "Tiny and elegant HTTP client based on browser Fetch API with retries and hooks",
+          "metadata": {
+            "version": "1.2.0",
+            "doc_count": 8,
+            "qmd_collection": "project-deps",
+            "qmd_path_prefix": "ky/"
+          },
+          "nodes": [...]
+        }
+      ]
+    },
+    {
+      "title": "Data Fetching & State",
+      "node_id": "cat-002",
+      "type": "category",
+      "summary": "Libraries for fetching data and managing async state in applications",
+      "nodes": [
+        {
+          "title": "react-query",
+          "node_id": "dep-react-query",
+          "type": "docpack",
+          "summary": "Powerful async state management for React with caching, background updates, and optimistic updates",
+          "metadata": {
+            "version": "5.0.0",
+            "doc_count": 45,
+            "primary_use_cases": [
+              "Server state management",
+              "Data caching",
+              "Background refetching",
+              "Optimistic updates"
+            ],
+            "related_deps": ["axios", "zod"]
+          },
+          "nodes": [...]
+        }
+      ]
+    },
+    {
+      "title": "Validation & Schemas",
+      "node_id": "cat-003",
+      "type": "category",
+      "summary": "Libraries for runtime validation, type checking, and schema definition",
+      "nodes": [
+        {
+          "title": "zod",
+          "node_id": "dep-zod",
+          "type": "docpack",
+          "summary": "TypeScript-first schema validation with static type inference",
+          "metadata": {
+            "version": "3.22.0",
+            "doc_count": 32,
+            "primary_use_cases": [
+              "API response validation",
+              "Form validation",
+              "Environment variable validation",
+              "Type inference"
+            ],
+            "related_deps": ["react-hook-form", "axios"]
+          },
+          "nodes": [...]
+        }
+      ]
+    }
+  ],
+
+  // Cross-cutting concerns that span multiple docpacks
+  "cross_references": {
+    "api_validation": {
+      "description": "Validating API responses",
+      "involves": ["axios", "zod", "react-query"],
+      "example_flow": "axios fetches → zod validates → react-query caches"
+    },
+    "error_handling": {
+      "description": "Handling errors across the stack",
+      "involves": ["axios", "react-query", "zod"],
+      "docs": ["axios/guides/error-handling.md", "react-query/guides/errors.md"]
+    }
+  }
+}
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            AGENT QUERY FLOW                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Agent: "I need to validate API responses and cache the results"                │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│  STEP 1: Navigate Meta-Tree (PageIndex)                                         │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│                                                                                  │
+│  Agent reads docpack_tree.json summaries:                                       │
+│                                                                                  │
+│  → "Validation & Schemas" category                                              │
+│    → zod: "TypeScript-first schema validation..."                               │
+│      → primary_use_cases: ["API response validation", ...]  ✓ MATCH             │
+│                                                                                  │
+│  → "Data Fetching & State" category                                             │
+│    → react-query: "...caching, background updates..."                           │
+│      → primary_use_cases: ["Data caching", ...]  ✓ MATCH                        │
+│                                                                                  │
+│  → cross_references.api_validation:                                             │
+│    → "axios fetches → zod validates → react-query caches"  ✓ EXACT MATCH        │
+│                                                                                  │
+│  Agent decides: Search zod + react-query docs                                   │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│  STEP 2: Semantic Search (qmd)                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│                                                                                  │
+│  $ qmd query "validate API response and cache" -c project-deps                  │
+│        --filter-path "zod/*,react-query/*"                                      │
+│                                                                                  │
+│  Results:                                                                        │
+│  ┌─────────┬──────────────────────────────────────────────────────────────┐     │
+│  │ 0.94    │ zod/guides/api-validation.md                                 │     │
+│  │         │ "Validating API responses with Zod schemas..."              │     │
+│  ├─────────┼──────────────────────────────────────────────────────────────┤     │
+│  │ 0.91    │ react-query/guides/query-functions.md                       │     │
+│  │         │ "Fetching and caching data with useQuery..."                │     │
+│  ├─────────┼──────────────────────────────────────────────────────────────┤     │
+│  │ 0.87    │ react-query/guides/typescript.md                            │     │
+│  │         │ "Type-safe queries with Zod integration..."                 │     │
+│  └─────────┴──────────────────────────────────────────────────────────────┘     │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│  STEP 3: Follow Links to Code (if needed)                                       │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│                                                                                  │
+│  From link_index.json:                                                          │
+│  → zod/guides/api-validation.md links to: z.object(), z.parse()                │
+│  → Get code implementations from repomix outputs                                │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Directory Structure
+
+```
+project/
+├── src/
+├── .dependencies/
+│   │
+│   ├── docpack_tree.json          # ← PageIndex meta-tree (ONE file)
+│   ├── link_index.json            # ← Cross-docpack links
+│   │
+│   ├── axios/
+│   │   ├── code/
+│   │   │   ├── repomix-output.xml
+│   │   │   └── pageindex.json     # Code-level tree (optional)
+│   │   └── docs/                  # ← Indexed by qmd
+│   │       ├── guides/
+│   │       └── api-reference.md
+│   │
+│   ├── react-query/
+│   │   ├── code/
+│   │   └── docs/                  # ← Indexed by qmd
+│   │
+│   └── zod/
+│       ├── code/
+│       └── docs/                  # ← Indexed by qmd
+│
+└── .qmd/
+    └── index.sqlite               # ← Single qmd index for ALL docs
+```
+
+### Benefits of Meta-Tree Approach
+
+| Benefit | Description |
+|---------|-------------|
+| **Cross-Dependency Discovery** | "What libraries help with X?" - navigate categories |
+| **Unified Search** | One qmd search across ALL documentation |
+| **Relationship Awareness** | Cross-references show how deps work together |
+| **Efficient Navigation** | Read summaries before diving into specific docs |
+| **Scalable** | Add new docpacks without restructuring |
+
+### When to Use Each Approach
+
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| Single dependency deep-dive | Per-dependency PageIndex |
+| "Which library for X?" | Meta-tree navigation |
+| Cross-library patterns | Meta-tree cross_references |
+| Specific API lookup | Direct qmd search |
+| Implementation details | Per-dependency code PageIndex |
+
+### Meta-Tree Generation
+
+```python
+# depindex/meta_tree.py
+
+class MetaTreeBuilder:
+    """Build PageIndex tree across all docpacks."""
+
+    def __init__(self, deps_dir: str):
+        self.deps_dir = deps_dir
+        self.docpacks = []
+
+    def scan_docpacks(self) -> list:
+        """Find all docpack directories."""
+        # Scan .dependencies/ for subdirs with docs/
+        pass
+
+    def categorize_docpacks(self, docpacks: list) -> dict:
+        """Use LLM to categorize docpacks by purpose."""
+        prompt = """
+        Categorize these libraries into logical groups:
+        {docpacks}
+
+        Categories might include:
+        - HTTP & Networking
+        - Data Fetching & State
+        - Validation & Schemas
+        - UI Components
+        - Utilities
+        - Testing
+        ...
+
+        Return JSON with categories and which libraries belong to each.
+        """
+        pass
+
+    def generate_docpack_summary(self, docpack: str) -> dict:
+        """Generate summary and use cases for a docpack."""
+        # Read README, key docs
+        # Use LLM to summarize purpose and use cases
+        pass
+
+    def extract_topics(self, docpack: str) -> list:
+        """Extract main topics/sections from docpack."""
+        # Parse doc structure
+        # Group by theme
+        # Generate topic summaries
+        pass
+
+    def find_cross_references(self, docpacks: list) -> dict:
+        """Find relationships between docpacks."""
+        # Look for:
+        # - Mentions of other deps in docs
+        # - Common patterns (fetch → validate → cache)
+        # - Integration guides
+        pass
+
+    def build_tree(self) -> dict:
+        """Build the complete meta-tree."""
+        docpacks = self.scan_docpacks()
+        categories = self.categorize_docpacks(docpacks)
+
+        tree = {"structure": [], "cross_references": {}}
+
+        for category, deps in categories.items():
+            category_node = {
+                "title": category,
+                "type": "category",
+                "summary": self.generate_category_summary(category, deps),
+                "nodes": []
+            }
+
+            for dep in deps:
+                docpack_node = {
+                    "title": dep,
+                    "type": "docpack",
+                    "summary": self.generate_docpack_summary(dep),
+                    "metadata": self.get_docpack_metadata(dep),
+                    "nodes": self.extract_topics(dep)
+                }
+                category_node["nodes"].append(docpack_node)
+
+            tree["structure"].append(category_node)
+
+        tree["cross_references"] = self.find_cross_references(docpacks)
+
+        return tree
+```
+
+### Unified Search with Meta-Tree
+
+```python
+class MetaTreeSearch:
+    """Search with meta-tree navigation."""
+
+    def __init__(self, deps_dir: str):
+        self.meta_tree = load_json(f"{deps_dir}/docpack_tree.json")
+        self.qmd_collection = "project-deps"
+
+    def find_relevant_docpacks(self, query: str) -> list:
+        """Use meta-tree to identify relevant docpacks."""
+
+        # Strategy 1: Check cross_references for patterns
+        for pattern, info in self.meta_tree["cross_references"].items():
+            if self._matches_pattern(query, info["description"]):
+                return info["involves"]
+
+        # Strategy 2: Search category/docpack summaries
+        relevant = []
+        for category in self.meta_tree["structure"]:
+            for docpack in category["nodes"]:
+                if self._matches_summary(query, docpack):
+                    relevant.append(docpack["title"])
+
+        return relevant
+
+    def search(self, query: str) -> dict:
+        """Full search flow."""
+
+        # Step 1: Find relevant docpacks via meta-tree
+        relevant_docpacks = self.find_relevant_docpacks(query)
+
+        # Step 2: Build path filter for qmd
+        if relevant_docpacks:
+            path_filter = ",".join(f"{dp}/*" for dp in relevant_docpacks)
+        else:
+            path_filter = None  # Search all
+
+        # Step 3: Run qmd search
+        results = qmd_query(
+            query,
+            collection=self.qmd_collection,
+            filter_path=path_filter
+        )
+
+        # Step 4: Enrich with meta-tree context
+        for result in results:
+            docpack = self._get_docpack_from_path(result["path"])
+            result["docpack_summary"] = self.meta_tree.get_docpack(docpack)["summary"]
+            result["related_docpacks"] = self.meta_tree.get_related(docpack)
+
+        return {
+            "query": query,
+            "identified_docpacks": relevant_docpacks,
+            "results": results
+        }
+```
+
+---
+
 ## Future Enhancements
 
 ### Code Layer (PageIndex + Repomix)
