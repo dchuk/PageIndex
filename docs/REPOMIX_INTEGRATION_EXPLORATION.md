@@ -1,8 +1,14 @@
-# PageIndex + Repomix Integration Exploration
+# PageIndex + Repomix + qmd Integration Exploration
 
 ## Executive Summary
 
-This document explores the integration of PageIndex with Repomix to enable intelligent, hierarchical search over code dependencies for AI coding agents. The core idea is to use Repomix to generate structured representations of code dependencies, then adapt PageIndex to create navigable tree structures that coding agents can efficiently search.
+This document explores a comprehensive dependency knowledge system for AI coding agents, combining three tools:
+
+1. **Repomix** - Generates structured representations of code repositories
+2. **PageIndex** - Creates hierarchical tree structures for reasoning-based code navigation
+3. **qmd** - Provides semantic and keyword search over documentation, guides, and tutorials
+
+The vision: For each dependency, agents have access to both the **source code** (via PageIndex + Repomix) and **documentation/guides** (via qmd), enabling complete understanding of how to use any library.
 
 ## Problem Statement
 
@@ -126,59 +132,185 @@ PageIndex creates hierarchical tree structures from documents for reasoning-base
 }
 ```
 
+### qmd: What It Does
+
+qmd is an on-device search engine that indexes markdown documents with hybrid search capabilities:
+
+| Feature | Description |
+|---------|-------------|
+| **BM25 Full-Text** | Fast keyword-based search |
+| **Vector Semantic** | Cosine similarity for concept matching |
+| **LLM Re-ranking** | Hybrid query with confidence scoring |
+| **Local Processing** | All search via local GGUF models |
+| **Collections** | Organize docs by project/topic |
+| **MCP Server** | Native AI agent integration |
+
+**Search Modes**:
+| Mode | Mechanism | Best For |
+|------|-----------|----------|
+| `search` | BM25 only | Fast keyword lookup |
+| `vsearch` | Vector similarity | Conceptual questions |
+| `query` | Hybrid + re-ranking | Highest quality results |
+
+**Key CLI Commands**:
+```bash
+# Collection management
+qmd collection add ./docs --name axios-docs
+
+# Search modes
+qmd search "interceptors" -c axios-docs
+qmd vsearch "how to handle errors" -c axios-docs
+qmd query "retry failed requests" -c axios-docs --json
+
+# Document retrieval
+qmd get docs/guide.md:50 -l 100  # Get lines 50-150
+qmd multi-get "docs/**/*.md"     # Get multiple files
+```
+
+**Why qmd for Documentation**:
+- Handles unstructured content (tutorials, guides, blog posts)
+- Semantic search finds conceptually related content
+- Local models = fast, private, works offline
+- MCP server enables direct agent integration
+- Score-based relevance (0.0-1.0) helps agents prioritize
+
 ---
 
-## Integration Architecture
+## Combined Architecture: The Full Picture
+
+The system provides **two complementary search layers**:
+
+| Layer | Tool | Content | Search Type | Best For |
+|-------|------|---------|-------------|----------|
+| **Code** | PageIndex + Repomix | Source code | Hierarchical navigation | "Where is X implemented?" |
+| **Docs** | qmd | Docs, guides, tutorials | Semantic + keyword | "How do I use X?" |
 
 ### High-Level Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           INDEXING PHASE                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌──────────────┐     ┌──────────────┐     ┌────────────────────────┐  │
-│  │ Dependency   │     │   Repomix    │     │ PageIndex for Repomix  │  │
-│  │ Repository   │────▶│  (Generate)  │────▶│     (Index + Tree)     │  │
-│  │ (e.g. axios) │     │              │     │                        │  │
-│  └──────────────┘     └──────────────┘     └────────────────────────┘  │
-│                              │                        │                 │
-│                              ▼                        ▼                 │
-│                     repomix-output.xml      dependency_index.json      │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              INDEXING PHASE                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────────┐                                                               │
+│  │ Dependency   │                                                               │
+│  │ (e.g. axios) │                                                               │
+│  └──────┬───────┘                                                               │
+│         │                                                                        │
+│         ├─────────────────────────────────┐                                     │
+│         │                                 │                                     │
+│         ▼                                 ▼                                     │
+│  ┌─────────────────┐              ┌─────────────────┐                          │
+│  │  SOURCE CODE    │              │  DOCUMENTATION  │                          │
+│  │                 │              │                 │                          │
+│  │  Repository     │              │  - README.md    │                          │
+│  │  Source Files   │              │  - /docs/*.md   │                          │
+│  └────────┬────────┘              │  - Tutorials    │                          │
+│           │                       │  - API guides   │                          │
+│           ▼                       │  - Blog posts   │                          │
+│  ┌─────────────────┐              └────────┬────────┘                          │
+│  │    Repomix      │                       │                                    │
+│  │   (Generate)    │                       ▼                                    │
+│  └────────┬────────┘              ┌─────────────────┐                          │
+│           │                       │      qmd        │                          │
+│           ▼                       │  (Index Docs)   │                          │
+│  ┌─────────────────┐              └────────┬────────┘                          │
+│  │   PageIndex     │                       │                                    │
+│  │  (Build Tree)   │                       │                                    │
+│  └────────┬────────┘                       │                                    │
+│           │                                │                                    │
+│           ▼                                ▼                                    │
+│  ┌─────────────────┐              ┌─────────────────┐                          │
+│  │ pageindex.json  │              │  qmd collection │                          │
+│  │ (Code Tree)     │              │  (Doc Index)    │                          │
+│  └─────────────────┘              └─────────────────┘                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          RETRIEVAL PHASE                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌──────────────┐     ┌──────────────┐     ┌────────────────────────┐  │
-│  │ Coding Agent │     │ PageIndex    │     │ Repomix Output +       │  │
-│  │   Query:     │────▶│  Navigator   │────▶│ Index                  │  │
-│  │ "How to use  │     │ (LLM-based)  │     │                        │  │
-│  │  interceptors│     │              │◀────│ Returns relevant       │  │
-│  │  in axios?"  │     └──────────────┘     │ code sections          │  │
-│  └──────────────┘                          └────────────────────────┘  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              RETRIEVAL PHASE                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────────────┐                                                           │
+│  │   Coding Agent   │                                                           │
+│  │                  │                                                           │
+│  │ "How do I add    │                                                           │
+│  │  retry logic     │                                                           │
+│  │  with axios?"    │                                                           │
+│  └────────┬─────────┘                                                           │
+│           │                                                                      │
+│           ├──────────────────────────────────┐                                  │
+│           │                                  │                                  │
+│           ▼                                  ▼                                  │
+│  ┌─────────────────────────┐    ┌─────────────────────────┐                    │
+│  │   PageIndex Navigator   │    │      qmd Search         │                    │
+│  │                         │    │                         │                    │
+│  │  - Navigate code tree   │    │  - Semantic doc search  │                    │
+│  │  - Find implementations │    │  - Find tutorials       │                    │
+│  │  - Get function sigs    │    │  - Get usage examples   │                    │
+│  └───────────┬─────────────┘    └───────────┬─────────────┘                    │
+│              │                              │                                   │
+│              ▼                              ▼                                   │
+│  ┌─────────────────────────┐    ┌─────────────────────────┐                    │
+│  │  Code Context           │    │  Doc Context            │                    │
+│  │                         │    │                         │                    │
+│  │  - lib/core/Axios.js    │    │  - "Retry Guide" (0.92) │                    │
+│  │  - InterceptorManager   │    │  - "Error Handling"     │                    │
+│  │  - Function signatures  │    │  - Code examples        │                    │
+│  └───────────┬─────────────┘    └───────────┬─────────────┘                    │
+│              │                              │                                   │
+│              └──────────────┬───────────────┘                                   │
+│                             ▼                                                   │
+│              ┌─────────────────────────┐                                        │
+│              │   Combined Response     │                                        │
+│              │                         │                                        │
+│              │  Agent understands:     │                                        │
+│              │  - WHERE (code paths)   │                                        │
+│              │  - HOW (docs/examples)  │                                        │
+│              │  - WHY (guides)         │                                        │
+│              └─────────────────────────┘                                        │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Directory Structure for Dependencies
 
 ```
 project/
-├── src/                          # Your project code
-├── .dependencies/                # PageIndex dependency storage
+├── src/                              # Your project code
+├── .dependencies/                    # Dependency knowledge base
 │   ├── axios/
-│   │   ├── repomix-output.xml    # Raw Repomix output
-│   │   └── pageindex.json        # Indexed tree structure
+│   │   ├── code/
+│   │   │   ├── repomix-output.xml    # Raw Repomix output
+│   │   │   └── pageindex.json        # Indexed code tree
+│   │   └── docs/                     # Documentation collection (qmd indexed)
+│   │       ├── README.md             # Main readme
+│   │       ├── api-reference.md      # API docs
+│   │       ├── guides/
+│   │       │   ├── getting-started.md
+│   │       │   ├── interceptors.md
+│   │       │   └── error-handling.md
+│   │       └── tutorials/
+│   │           ├── retry-logic.md
+│   │           └── authentication.md
+│   │
 │   ├── react-query/
-│   │   ├── repomix-output.xml
-│   │   └── pageindex.json
+│   │   ├── code/
+│   │   │   ├── repomix-output.xml
+│   │   │   └── pageindex.json
+│   │   └── docs/
+│   │       ├── overview.md
+│   │       ├── queries.md
+│   │       └── mutations.md
+│   │
 │   └── zod/
-│       ├── repomix-output.xml
-│       └── pageindex.json
-└── pageindex.config.yaml         # Configuration
+│       ├── code/
+│       │   └── ...
+│       └── docs/
+│           └── ...
+│
+├── depindex.config.yaml              # Combined configuration
+└── .qmd/                             # qmd index cache (auto-generated)
 ```
 
 ---
@@ -452,92 +584,316 @@ class DependencyIndex:
 
 ## Usage Workflow
 
-### 1. Index Dependencies
+### 1. Index a Dependency (Code + Docs)
 
 ```bash
-# Generate Repomix output for a dependency
-cd ~/.dependencies/axios
-npx repomix --remote yamadashy/axios --output repomix-output.xml
+# Create dependency directory structure
+mkdir -p .dependencies/axios/{code,docs}
+
+# === CODE INDEXING ===
+# Generate Repomix output
+npx repomix --remote axios/axios --output .dependencies/axios/code/repomix-output.xml
 
 # Index with PageIndex
 python run_pageindex.py \
-  --repomix_path ~/.dependencies/axios/repomix-output.xml \
+  --repomix_path .dependencies/axios/code/repomix-output.xml \
   --code-depth function \
-  --if-add-node-summary yes
+  --if-add-node-summary yes \
+  --output .dependencies/axios/code/pageindex.json
+
+# === DOCS INDEXING ===
+# Gather documentation (manual or scripted)
+# Option 1: Clone docs from repo
+git clone --depth 1 --filter=blob:none --sparse https://github.com/axios/axios
+cd axios && git sparse-checkout set docs && mv docs/* ../.dependencies/axios/docs/
+
+# Option 2: Download from documentation site
+# (Custom script to scrape/download markdown docs)
+
+# Option 3: Add curated guides/tutorials
+# Copy relevant blog posts, tutorials, Stack Overflow answers as markdown
+
+# Index docs with qmd
+qmd collection add .dependencies/axios/docs --name axios-docs
+
+# Add context for better search
+qmd context add qmd://axios-docs "Axios HTTP client documentation, guides, and tutorials"
+
+# Generate embeddings
+qmd embed
 ```
 
-### 2. Batch Index Project Dependencies
+### 2. Batch Index All Project Dependencies
 
 ```bash
-# Script to index all dependencies from package.json
-python scripts/index_dependencies.py \
-  --package-json ./package.json \
-  --output-dir ./.dependencies
+#!/bin/bash
+# scripts/index_all_deps.sh
+
+DEPS_DIR=".dependencies"
+
+# Read dependencies from package.json
+DEPS=$(jq -r '.dependencies | keys[]' package.json)
+
+for dep in $DEPS; do
+  echo "Indexing $dep..."
+
+  mkdir -p "$DEPS_DIR/$dep"/{code,docs}
+
+  # Code indexing
+  npx repomix --remote "npm:$dep" --output "$DEPS_DIR/$dep/code/repomix-output.xml"
+  python run_pageindex.py \
+    --repomix_path "$DEPS_DIR/$dep/code/repomix-output.xml" \
+    --output "$DEPS_DIR/$dep/code/pageindex.json"
+
+  # Doc indexing (if docs directory exists in package)
+  if [ -d "node_modules/$dep/docs" ]; then
+    cp -r "node_modules/$dep/docs"/* "$DEPS_DIR/$dep/docs/"
+    qmd collection add "$DEPS_DIR/$dep/docs" --name "$dep-docs"
+  fi
+done
+
+# Generate all embeddings at once
+qmd embed
 ```
 
-### 3. Agent Query Flow
+### 3. Agent Query Flow - Unified Search
 
 ```python
-# In coding agent:
+# depindex/unified_search.py
+import subprocess
+import json
 from pageindex import DependencyIndex
 
-deps = DependencyIndex("./.dependencies")
+class UnifiedDependencySearch:
+    """Combined PageIndex + qmd search for dependencies."""
 
-# Agent needs to understand axios interceptors
-context = deps.search(
-    query="How to add request interceptors",
-    dependencies=["axios"]
+    def __init__(self, deps_dir: str):
+        self.deps_dir = deps_dir
+        self.code_index = DependencyIndex(deps_dir)
+
+    def search(
+        self,
+        query: str,
+        dependency: str,
+        search_code: bool = True,
+        search_docs: bool = True
+    ) -> dict:
+        """Search both code and documentation for a dependency."""
+
+        results = {
+            "query": query,
+            "dependency": dependency,
+            "code_results": None,
+            "doc_results": None
+        }
+
+        # Search code via PageIndex
+        if search_code:
+            results["code_results"] = self.code_index.search(
+                query=query,
+                dependencies=[dependency]
+            )
+
+        # Search docs via qmd
+        if search_docs:
+            results["doc_results"] = self._qmd_search(
+                query=query,
+                collection=f"{dependency}-docs"
+            )
+
+        return results
+
+    def _qmd_search(self, query: str, collection: str) -> list:
+        """Execute qmd hybrid search."""
+        result = subprocess.run(
+            ["qmd", "query", query, "-c", collection, "--json", "-n", "5"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        return []
+
+    def get_doc_content(self, doc_id: str) -> str:
+        """Retrieve full document content from qmd."""
+        result = subprocess.run(
+            ["qmd", "get", doc_id, "--full"],
+            capture_output=True,
+            text=True
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+
+# Usage in coding agent:
+search = UnifiedDependencySearch(".dependencies")
+
+# Agent query: "How do I implement retry logic with axios?"
+results = search.search(
+    query="implement retry logic",
+    dependency="axios"
 )
 
-# Returns structured results:
+# Results structure:
 # {
-#   "relevant_nodes": [
+#   "query": "implement retry logic",
+#   "dependency": "axios",
+#   "code_results": {
+#     "relevant_nodes": [
+#       {
+#         "title": "lib/helpers/retryAfter.js",
+#         "summary": "Helper for parsing retry-after headers",
+#         "path": "lib/helpers/retryAfter.js",
+#         "line_start": 1
+#       }
+#     ]
+#   },
+#   "doc_results": [
 #     {
-#       "title": "InterceptorManager.js",
-#       "path": "lib/core/InterceptorManager.js",
-#       "summary": "Manages request/response interceptors...",
-#       "content_snippet": "..."
+#       "docid": "#a1b2c3",
+#       "score": 0.89,
+#       "title": "Implementing Retry Logic",
+#       "path": "docs/guides/retry-logic.md",
+#       "snippet": "To implement retry logic with axios..."
+#     },
+#     {
+#       "docid": "#d4e5f6",
+#       "score": 0.76,
+#       "title": "Error Handling Guide",
+#       "path": "docs/guides/error-handling.md",
+#       "snippet": "When requests fail, you can catch..."
 #     }
-#   ],
-#   "navigation_path": ["lib", "core", "InterceptorManager.js"],
-#   "related_nodes": [...]
+#   ]
 # }
 ```
+
+### 4. MCP Server Integration
+
+For AI agents that support MCP (Model Context Protocol), both tools can be exposed:
+
+```json
+// claude_desktop_config.json or agent MCP config
+{
+  "mcpServers": {
+    "qmd": {
+      "command": "qmd",
+      "args": ["mcp"]
+    },
+    "depindex": {
+      "command": "python",
+      "args": ["-m", "depindex.mcp_server"]
+    }
+  }
+}
+```
+
+The agent then has access to:
+- `qmd_query` - Search documentation semantically
+- `qmd_get` - Retrieve document content
+- `depindex_search` - Navigate code trees
+- `depindex_get_code` - Get code sections with context
 
 ---
 
 ## Configuration Options
 
 ```yaml
-# pageindex.config.yaml
+# depindex.config.yaml - Unified configuration
 
-# Repomix-specific settings
-repomix:
-  default_style: xml
-  code_analysis:
-    enabled: true
-    depth: function        # directory | file | function
-    languages:
-      - python
-      - javascript
-      - typescript
-      - go
-
-  tree_optimization:
-    collapse_threshold: 1000   # tokens - collapse small dirs
-    expand_entry_points: true  # Always expand index.js, main.py, etc.
-    max_depth: 6               # Maximum tree depth
-
-  summaries:
-    directory_level: true
-    file_level: true
-    function_level: false      # Can be expensive for large codebases
-
-# Dependency management
+# General settings
 dependencies:
   storage_dir: .dependencies
   auto_update: false
   include_dev_deps: false
+
+# === CODE INDEXING (PageIndex + Repomix) ===
+code:
+  repomix:
+    default_style: xml
+    compress: false          # Use Tree-sitter compression
+    remove_comments: false
+
+  pageindex:
+    code_analysis:
+      enabled: true
+      depth: function        # directory | file | function
+      languages:
+        - python
+        - javascript
+        - typescript
+        - go
+        - rust
+
+    tree_optimization:
+      collapse_threshold: 1000   # tokens - collapse small dirs
+      expand_entry_points: true  # Always expand index.js, main.py, etc.
+      max_depth: 6               # Maximum tree depth
+
+    summaries:
+      directory_level: true
+      file_level: true
+      function_level: false      # Can be expensive for large codebases
+
+# === DOCUMENTATION INDEXING (qmd) ===
+docs:
+  sources:
+    - type: repo_docs         # Clone docs/ from repo
+      enabled: true
+    - type: readme            # Include README files
+      enabled: true
+    - type: custom            # Custom curated docs
+      paths:
+        - ./custom-guides/
+
+  qmd:
+    # Search settings
+    default_search_mode: query  # search | vsearch | query
+    min_score: 0.3              # Minimum relevance score
+    max_results: 10
+
+    # Embedding settings
+    chunk_size: 800             # Tokens per chunk
+    chunk_overlap: 0.15         # 15% overlap
+
+    # Context descriptions (auto-generated or custom)
+    auto_context: true          # Generate context from README
+
+# === UNIFIED SEARCH ===
+search:
+  # Default behavior when agent searches
+  default_targets:
+    code: true
+    docs: true
+
+  # Result merging
+  merge_strategy: interleave   # interleave | code_first | docs_first
+
+  # Response format
+  include_snippets: true
+  max_snippet_length: 500
+  include_file_paths: true
+```
+
+### qmd Collection Setup
+
+Each dependency's docs are registered as a qmd collection:
+
+```bash
+# View all indexed collections
+qmd collection list
+
+# Output:
+# axios-docs       .dependencies/axios/docs        245 files   125,432 tokens
+# react-query-docs .dependencies/react-query/docs  189 files    98,234 tokens
+# zod-docs         .dependencies/zod/docs           67 files    45,123 tokens
+
+# Check index health
+qmd status
+
+# Update after adding new docs
+qmd update
+
+# Re-embed if needed
+qmd embed -f
 ```
 
 ---
@@ -546,61 +902,204 @@ dependencies:
 
 ### For Coding Agents
 
-1. **Structured Navigation**: Instead of searching through raw files, agents navigate a logical tree
-2. **Context-Aware Retrieval**: Summaries at each level help agents decide where to look
-3. **Efficient Token Usage**: Tree structure allows progressive disclosure
-4. **Explainable Results**: Can trace exactly where information came from
+1. **Complete Understanding**: Both code structure AND usage guidance
+2. **Structured Navigation**: PageIndex tree for "where is it?"
+3. **Semantic Search**: qmd for "how do I use it?"
+4. **Context-Aware Retrieval**: Summaries help agents decide where to look
+5. **Efficient Token Usage**: Progressive disclosure, only load what's needed
+6. **Explainable Results**: Trace exactly where information came from
+7. **Offline Capable**: All processing is local, no API calls during search
+8. **Version Consistent**: Indexed docs match the dependency version you're using
 
 ### Compared to Alternatives
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Raw File Reading** | Complete info | Overwhelming, no structure |
-| **Vector RAG** | Fast, scalable | Loses context, opaque results |
-| **Web Search** | Up-to-date | Slow, may find wrong version |
-| **PageIndex + Repomix** | Structured, explainable, hierarchical | Requires pre-indexing |
+| Approach | Code Understanding | Usage Guidance | Speed | Reliability |
+|----------|-------------------|----------------|-------|-------------|
+| **Raw File Reading** | Complete | None | Slow | High |
+| **Vector RAG** | Partial (chunks) | Partial | Fast | Medium |
+| **Web Search** | Links only | Variable | Slow | Low (outdated) |
+| **LLM Knowledge** | Outdated | Generic | Fast | Low (hallucinations) |
+| **PageIndex + qmd** | Hierarchical | Semantic search | Fast | High |
+
+### Why Two Search Layers?
+
+| Question Type | Best Tool | Why |
+|--------------|-----------|-----|
+| "Where is X implemented?" | PageIndex | Hierarchical code navigation |
+| "How do I use X?" | qmd | Semantic doc search |
+| "What does function Y do?" | PageIndex | Code + summaries |
+| "Best practices for X?" | qmd | Guides and tutorials |
+| "What parameters does Z take?" | PageIndex | Function signatures |
+| "Common patterns with X?" | qmd | Examples in docs |
 
 ### Example Agent Interaction
 
 ```
-Agent: I need to implement request retry logic with axios.
+Agent Task: Implement request retry logic with exponential backoff using axios.
 
-[PageIndex Navigation]
-1. Search "retry" across axios index
-2. Find: lib/helpers/retryAfter.js (summary: "Helper for retry-after header parsing")
-3. Find: lib/defaults/index.js (summary: "Default config including retry settings")
-4. Navigate to lib/core/Axios.js → request method
-5. Retrieve relevant code sections with context
+═══════════════════════════════════════════════════════════════════════════════
+STEP 1: Search Documentation (qmd)
+═══════════════════════════════════════════════════════════════════════════════
 
-Agent receives:
-- Exact file paths and line numbers
-- Function signatures
-- Usage context from surrounding code
-- Related files (imports, exports)
+$ qmd query "retry logic exponential backoff" -c axios-docs --json
+
+Results:
+┌─────────┬───────┬─────────────────────────────────────────────────────────┐
+│ Score   │ DocID │ Title & Path                                            │
+├─────────┼───────┼─────────────────────────────────────────────────────────┤
+│ 0.92    │ #a1b2 │ "Implementing Retry Logic"                              │
+│         │       │ docs/guides/retry-logic.md                              │
+│         │       │ Snippet: "Use axios-retry for automatic retries with    │
+│         │       │ exponential backoff. Configure with retries: 3..."      │
+├─────────┼───────┼─────────────────────────────────────────────────────────┤
+│ 0.85    │ #c3d4 │ "Error Handling Best Practices"                         │
+│         │       │ docs/guides/error-handling.md                           │
+│         │       │ Snippet: "For transient failures, implement retry..."   │
+├─────────┼───────┼─────────────────────────────────────────────────────────┤
+│ 0.71    │ #e5f6 │ "Interceptors Guide"                                    │
+│         │       │ docs/guides/interceptors.md                             │
+│         │       │ Snippet: "Response interceptors can catch errors..."    │
+└─────────┴───────┴─────────────────────────────────────────────────────────┘
+
+Agent reads top doc:
+$ qmd get #a1b2 --full
+
+→ Learns: Use axios-retry plugin or implement via interceptors
+→ Learns: exponentialDelay helper exists
+→ Learns: Common pattern with config options
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 2: Navigate Code (PageIndex)
+═══════════════════════════════════════════════════════════════════════════════
+
+Agent navigates code tree for implementation details:
+
+axios (pageindex.json)
+└── lib/
+    ├── core/
+    │   └── Axios.js
+    │       └── request() ← "Main request method, calls dispatchRequest"
+    ├── helpers/
+    │   └── retryAfter.js ← "Parses Retry-After header from responses"
+    └── defaults/
+        └── index.js ← "Default config including timeout settings"
+
+Agent retrieves code:
+→ Gets: retryAfter.js implementation (parsing logic)
+→ Gets: How interceptors are called in request flow
+→ Gets: Default timeout/retry configuration structure
+
+═══════════════════════════════════════════════════════════════════════════════
+STEP 3: Synthesize and Implement
+═══════════════════════════════════════════════════════════════════════════════
+
+Agent now has:
+✓ HOW: Tutorial showing axios-retry pattern (from docs)
+✓ WHERE: Interceptor hooks in lib/core/Axios.js (from code)
+✓ WHAT: retryAfter helper for header parsing (from code)
+✓ WHY: Best practices for transient errors (from docs)
+
+Agent implements:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ import axios from 'axios';                                                  │
+│ import axiosRetry from 'axios-retry';                                       │
+│                                                                             │
+│ // Based on docs/guides/retry-logic.md pattern                              │
+│ axiosRetry(axios, {                                                         │
+│   retries: 3,                                                               │
+│   retryDelay: axiosRetry.exponentialDelay,                                  │
+│   retryCondition: (error) => {                                              │
+│     // From docs: retry on network errors and 5xx                           │
+│     return axiosRetry.isNetworkOrIdempotentRequestError(error)              │
+│       || error.response?.status >= 500;                                     │
+│   }                                                                         │
+│ });                                                                         │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Future Enhancements
 
+### Code Layer (PageIndex + Repomix)
 1. **Cross-Reference Graph**: Build import/export dependency graph between files
 2. **Type-Aware Search**: Use TypeScript types for better function matching
-3. **Version Diffing**: Compare indexes across dependency versions
-4. **Incremental Updates**: Update index when dependency updates
-5. **Usage Examples Extraction**: Find and index code examples from tests/docs
-6. **Multi-Language Support**: Extend code analysis to more languages
+3. **Call Graph Navigation**: "Show me everything that calls this function"
+4. **Multi-Language Support**: Extend code analysis to more languages
+
+### Documentation Layer (qmd)
+5. **Auto-Doc Collection**: Scrape official docs sites automatically
+6. **Version-Pinned Docs**: Match docs version to package.json version
+7. **Community Content**: Index relevant Stack Overflow, blog posts
+8. **Example Extraction**: Parse code examples from docs into runnable snippets
+
+### Unified System
+9. **Version Diffing**: Compare indexes across dependency versions
+10. **Incremental Updates**: Update index when dependencies change
+11. **Cross-Layer Linking**: Link doc mentions to code implementations
+12. **Agent Memory**: Cache agent's frequently-used dependency patterns
+13. **Project Context**: Index YOUR project's usage of dependencies for patterns
+
+### Distribution & Sharing
+14. **Pre-built Indexes**: Publish indexes for popular packages (npm-style)
+15. **Index CDN**: `depindex install axios` downloads pre-built index
+16. **Team Sharing**: Share curated doc collections across team
 
 ---
 
-## Next Steps
+## Implementation Roadmap
 
-1. [ ] Create `page_index_repomix.py` with XML parsing
-2. [ ] Add basic code structure extraction (Python/JS/TS)
-3. [ ] Integrate into `run_pageindex.py` CLI
-4. [ ] Build example index of a popular library (e.g., axios, requests)
-5. [ ] Create demo notebook showing agent usage
-6. [ ] Add Markdown and JSON format support
-7. [ ] Build dependency manager for multi-library support
+### Phase 1: Core Integration (MVP)
+- [ ] Create `page_index_repomix.py` with XML parsing
+- [ ] Add basic code structure extraction (Python/JS/TS)
+- [ ] Integrate into `run_pageindex.py` CLI
+- [ ] Document qmd setup workflow for dependencies
+- [ ] Build example index of axios (code + docs)
+
+### Phase 2: Unified Search
+- [ ] Create `depindex` unified search module
+- [ ] Implement combined search API (code + docs)
+- [ ] Add result merging and ranking
+- [ ] Create MCP server for agent integration
+
+### Phase 3: Automation
+- [ ] Script to auto-index from package.json/requirements.txt
+- [ ] Auto-download docs from common sources (GitHub, npm, PyPI)
+- [ ] Incremental update detection
+
+### Phase 4: Polish & Distribution
+- [ ] Pre-built index format specification
+- [ ] Index publishing/sharing mechanism
+- [ ] VS Code extension for browsing indexes
+- [ ] Demo notebook with full agent workflow
+
+---
+
+## Quick Start Guide
+
+```bash
+# 1. Install tools
+pip install pageindex
+npm install -g repomix
+npm install -g qmd  # or: cargo install qmd
+
+# 2. Create dependency knowledge base
+mkdir -p .dependencies/axios/{code,docs}
+
+# 3. Index code
+npx repomix --remote axios/axios -o .dependencies/axios/code/repomix-output.xml
+python -m pageindex --repomix .dependencies/axios/code/repomix-output.xml
+
+# 4. Add documentation
+git clone --depth 1 https://github.com/axios/axios /tmp/axios
+cp -r /tmp/axios/docs/* .dependencies/axios/docs/
+qmd collection add .dependencies/axios/docs --name axios-docs
+qmd embed
+
+# 5. Search!
+# Code: python -m pageindex search "interceptors" --dep axios
+# Docs: qmd query "how to use interceptors" -c axios-docs
+```
 
 ---
 
