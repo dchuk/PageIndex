@@ -930,6 +930,162 @@ With links:
 | **JSDoc @see** | code → doc | `@see {@link docs/api.md#create}` → links to doc section |
 | **README Link** | code → doc | Inline `[guide](./docs/guide.md)` → links to doc |
 
+### Link Target Strategy: What Links Point To
+
+Links use a **multi-layer reference** system with PageIndex node_id as the primary anchor:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         LINK REFERENCE LAYERS                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ LAYER 1: PageIndex Node ID (Primary - for retrieval & navigation)      │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  "code_node": "0023"                                                    │    │
+│  │                                                                         │    │
+│  │  Why primary:                                                           │    │
+│  │  ✓ Has pre-computed summary (understand without reading full code)     │    │
+│  │  ✓ Has hierarchical context (parent dir, sibling files)                │    │
+│  │  ✓ Knows content boundaries (start_index, end_index)                   │    │
+│  │  ✓ Enables tree navigation ("show me the parent module")               │    │
+│  │  ✓ Works even if original source not available                         │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ LAYER 2: Original Path + Line (Secondary - for display & debugging)    │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  "path": "lib/core/InterceptorManager.js"                               │    │
+│  │  "line": 15                                                             │    │
+│  │  "symbol": "use"                                                        │    │
+│  │                                                                         │    │
+│  │  Why include:                                                           │    │
+│  │  ✓ Human-readable ("this is at lib/core/InterceptorManager.js:15")     │    │
+│  │  ✓ Matches what developers see in IDE                                   │    │
+│  │  ✓ Useful for logging, debugging, citations                             │    │
+│  │  ✓ Can open directly if original source available                       │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ LAYER 3: Repomix Content Locator (Tertiary - for actual retrieval)     │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  "repomix_file_index": 23        # Which <file> element in XML          │    │
+│  │  "content_start_line": 1842      # Line in repomix output               │    │
+│  │  "content_end_line": 1920                                               │    │
+│  │                                                                         │    │
+│  │  Why include:                                                           │    │
+│  │  ✓ Fast content retrieval from single consolidated file                 │    │
+│  │  ✓ No need to have original source available                            │    │
+│  │  ✓ Precise byte/line offsets for extraction                             │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why PageIndex Node as Primary Anchor:**
+
+| Capability | Direct File Reference | PageIndex Node Reference |
+|------------|----------------------|-------------------------|
+| Get code content | ✓ | ✓ (via node → repomix locator) |
+| Get summary without reading | ✗ | ✓ (node has summary) |
+| Navigate to parent module | ✗ | ✓ (tree structure) |
+| See related files | ✗ | ✓ (sibling nodes) |
+| Works without original source | ✗ | ✓ |
+| Understand code in context | Partial | ✓ (hierarchical context) |
+
+**Example: Full Link Reference**
+
+```json
+{
+  "doc_id": "#a1b2c3",
+  "doc_path": "docs/guides/interceptors.md",
+  "code_refs": [
+    {
+      // Layer 1: PageIndex node (PRIMARY)
+      "node_id": "0023",
+      "node_summary": "Manages request/response interceptor chains with use() and eject() methods",
+
+      // Layer 2: Original source location (for display)
+      "path": "lib/core/InterceptorManager.js",
+      "symbol": "InterceptorManager",
+      "line_start": 1,
+      "line_end": 85,
+
+      // Layer 3: Repomix locator (for retrieval)
+      "repomix_locator": {
+        "file_index": 23,
+        "xml_path": "/repomix-output/files/file[@path='lib/core/InterceptorManager.js']",
+        "content_lines": [1842, 1920]
+      },
+
+      // Link metadata
+      "extraction_method": "code_example",
+      "confidence": 0.95
+    }
+  ]
+}
+```
+
+**Retrieval Flow:**
+
+```
+Agent: "Show me the InterceptorManager implementation"
+
+1. Lookup node_id "0023" in PageIndex
+   → Get: summary, parent (lib/core/), siblings, token count
+
+2. Agent decides: "Yes, this is what I need, show me the code"
+
+3. Use repomix_locator to extract content:
+   → Parse repomix-output.xml
+   → Find file at index 23 (or XPath)
+   → Extract lines 1842-1920
+   → Return actual source code
+
+4. Agent also gets context:
+   → Parent: "lib/core/ - Core functionality: Axios class, interceptors..."
+   → Siblings: Axios.js, dispatchRequest.js
+   → Can navigate: "Show me how Axios.js uses InterceptorManager"
+```
+
+**Why Not Link Directly to Repomix Offsets?**
+
+Linking only to repomix file locations would lose important context:
+
+```
+❌ Repomix-only link:
+{
+  "repomix_line": 1842,
+  "repomix_end": 1920
+}
+// Agent gets raw code, but:
+// - What does this code do? (no summary)
+// - What module is this part of? (no hierarchy)
+// - What other files are related? (no siblings)
+// - What's the "real" path? (line 1842 is meaningless to a developer)
+
+✓ PageIndex node link:
+{
+  "node_id": "0023",
+  "summary": "Manages request/response interceptor chains...",
+  "parent": "0004",  // lib/core/
+  "path": "lib/core/InterceptorManager.js"
+}
+// Agent can:
+// - Understand code without reading it (summary)
+// - Navigate up/down/sideways (tree)
+// - Show human-readable path (lib/core/...)
+// - Still get actual content when needed (via locator)
+```
+
 ### Link Index Structure
 
 ```json
@@ -939,12 +1095,33 @@ With links:
   "generated_at": "2024-01-15T10:30:00Z",
 
   "symbols": {
-    "axios": { "code_node": "0001", "type": "module" },
-    "axios.get": { "code_node": "0015", "type": "method" },
-    "axios.create": { "code_node": "0012", "type": "function" },
-    "AxiosInstance": { "code_node": "0008", "type": "class" },
-    "InterceptorManager": { "code_node": "0023", "type": "class" },
-    "interceptors.use": { "code_node": "0025", "type": "method" }
+    "axios": {
+      "node_id": "0001",
+      "type": "module",
+      "path": "lib/axios.js",
+      "repomix_file_index": 0
+    },
+    "axios.get": {
+      "node_id": "0015",
+      "type": "method",
+      "path": "lib/core/Axios.js",
+      "line": 52,
+      "repomix_file_index": 5
+    },
+    "InterceptorManager": {
+      "node_id": "0023",
+      "type": "class",
+      "path": "lib/core/InterceptorManager.js",
+      "line": 1,
+      "repomix_file_index": 7
+    },
+    "interceptors.use": {
+      "node_id": "0025",
+      "type": "method",
+      "path": "lib/core/InterceptorManager.js",
+      "line": 15,
+      "repomix_file_index": 7
+    }
   },
 
   "links": {
@@ -954,42 +1131,100 @@ With links:
         "doc_path": "docs/guides/interceptors.md",
         "doc_section": "Adding Interceptors",
         "code_refs": [
-          { "node_id": "0023", "path": "lib/core/InterceptorManager.js", "symbol": "InterceptorManager", "line": 1 },
-          { "node_id": "0025", "path": "lib/core/InterceptorManager.js", "symbol": "use", "line": 15 },
-          { "node_id": "0026", "path": "lib/core/InterceptorManager.js", "symbol": "eject", "line": 32 }
-        ],
-        "extraction_method": "code_example_analysis"
-      },
-      {
-        "doc_id": "#d4e5f6",
-        "doc_path": "docs/api-reference.md",
-        "doc_section": "axios.create(config)",
-        "code_refs": [
-          { "node_id": "0012", "path": "lib/axios.js", "symbol": "createInstance", "line": 15 }
-        ],
-        "extraction_method": "api_header_pattern"
+          {
+            // Layer 1: PageIndex node (primary anchor)
+            "node_id": "0023",
+
+            // Layer 2: Original source (for display)
+            "path": "lib/core/InterceptorManager.js",
+            "symbol": "InterceptorManager",
+            "line_start": 1,
+            "line_end": 85,
+
+            // Layer 3: Repomix locator (for retrieval)
+            "repomix_locator": {
+              "file_index": 7,
+              "content_lines": [1842, 1920]
+            },
+
+            // Link metadata
+            "extraction_method": "code_example",
+            "confidence": 0.95
+          },
+          {
+            "node_id": "0025",
+            "path": "lib/core/InterceptorManager.js",
+            "symbol": "use",
+            "line_start": 15,
+            "line_end": 28,
+            "repomix_locator": { "file_index": 7, "content_lines": [1856, 1869] },
+            "extraction_method": "code_example",
+            "confidence": 0.95
+          }
+        ]
       }
     ],
 
     "code_to_doc": [
       {
-        "code_node": "0023",
-        "code_path": "lib/core/InterceptorManager.js",
+        "node_id": "0023",
+        "path": "lib/core/InterceptorManager.js",
         "doc_refs": [
-          { "doc_id": "#a1b2c3", "path": "docs/guides/interceptors.md", "section": "Adding Interceptors" },
-          { "doc_id": "#x7y8z9", "path": "docs/api-reference.md", "section": "Request Interceptors" }
+          {
+            "doc_id": "#a1b2c3",
+            "doc_path": "docs/guides/interceptors.md",
+            "section": "Adding Interceptors",
+            "qmd_locator": {
+              "collection": "axios-docs",
+              "line_start": 45,
+              "line_end": 120
+            }
+          },
+          {
+            "doc_id": "#x7y8z9",
+            "doc_path": "docs/api-reference.md",
+            "section": "Request Interceptors",
+            "qmd_locator": {
+              "collection": "axios-docs",
+              "line_start": 234,
+              "line_end": 289
+            }
+          }
         ],
         "extraction_method": "reverse_lookup"
       }
     ]
   },
 
+  // Indexes for fast lookup
+  "indexes": {
+    // node_id → all docs that reference it
+    "node_to_docs": {
+      "0023": ["#a1b2c3", "#x7y8z9"],
+      "0025": ["#a1b2c3"]
+    },
+    // doc_id → all nodes it references
+    "doc_to_nodes": {
+      "#a1b2c3": ["0023", "0025", "0026"],
+      "#x7y8z9": ["0023"]
+    },
+    // symbol name → node_id (for quick symbol lookup)
+    "symbol_to_node": {
+      "InterceptorManager": "0023",
+      "interceptors.use": "0025",
+      "use": "0025"  // Short form alias
+    }
+  },
+
   "coverage": {
+    "symbols_total": 57,
     "symbols_with_docs": 45,
     "symbols_without_docs": 12,
+    "docs_total": 28,
     "docs_with_code_refs": 23,
     "docs_without_code_refs": 5,
-    "total_links": 156
+    "total_links": 156,
+    "avg_confidence": 0.89
   }
 }
 ```
