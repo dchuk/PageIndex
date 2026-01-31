@@ -13,3 +13,6 @@ log/*
 logs/
 parts/*
 json_results/*
+
+# Reference repos (cloned for analysis)
+qmd-reference/
