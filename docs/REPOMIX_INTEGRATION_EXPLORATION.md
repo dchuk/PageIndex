@@ -898,7 +898,493 @@ qmd embed -f
 
 ---
 
-## Benefits of This Approach
+## Bidirectional Link Index
+
+Instead of relying solely on semantic search to connect documentation to code, we precompute explicit mappings during indexing. This creates a **link index** that enables instant, deterministic navigation between layers.
+
+### The Problem with Pure Search
+
+```
+Agent: "How do I use axios interceptors?"
+
+Without links:
+  1. Search docs for "interceptors" → finds guide
+  2. Search code for "interceptors" → finds files
+  3. Hope they're related (fuzzy matching)
+
+With links:
+  1. Search docs for "interceptors" → finds guide
+  2. Guide has explicit links to: InterceptorManager.js:15, Axios.js:42
+  3. Jump directly to implementation (deterministic)
+```
+
+### Link Types
+
+| Link Type | Direction | Example |
+|-----------|-----------|---------|
+| **Symbol Reference** | doc → code | Doc mentions `axios.get()` → links to `lib/core/Axios.js:get()` |
+| **File Reference** | doc → code | Doc says "see `lib/helpers/`" → links to directory node |
+| **Code Example** | doc → code | Code block uses `interceptors.use()` → links to implementation |
+| **API Header** | doc → code | `### axios.create(config)` → links to function definition |
+| **Docstring Ref** | code → doc | `// See: docs/guides/interceptors.md` → links to doc |
+| **JSDoc @see** | code → doc | `@see {@link docs/api.md#create}` → links to doc section |
+| **README Link** | code → doc | Inline `[guide](./docs/guide.md)` → links to doc |
+
+### Link Index Structure
+
+```json
+{
+  "dependency": "axios",
+  "version": "1.6.0",
+  "generated_at": "2024-01-15T10:30:00Z",
+
+  "symbols": {
+    "axios": { "code_node": "0001", "type": "module" },
+    "axios.get": { "code_node": "0015", "type": "method" },
+    "axios.create": { "code_node": "0012", "type": "function" },
+    "AxiosInstance": { "code_node": "0008", "type": "class" },
+    "InterceptorManager": { "code_node": "0023", "type": "class" },
+    "interceptors.use": { "code_node": "0025", "type": "method" }
+  },
+
+  "links": {
+    "doc_to_code": [
+      {
+        "doc_id": "#a1b2c3",
+        "doc_path": "docs/guides/interceptors.md",
+        "doc_section": "Adding Interceptors",
+        "code_refs": [
+          { "node_id": "0023", "path": "lib/core/InterceptorManager.js", "symbol": "InterceptorManager", "line": 1 },
+          { "node_id": "0025", "path": "lib/core/InterceptorManager.js", "symbol": "use", "line": 15 },
+          { "node_id": "0026", "path": "lib/core/InterceptorManager.js", "symbol": "eject", "line": 32 }
+        ],
+        "extraction_method": "code_example_analysis"
+      },
+      {
+        "doc_id": "#d4e5f6",
+        "doc_path": "docs/api-reference.md",
+        "doc_section": "axios.create(config)",
+        "code_refs": [
+          { "node_id": "0012", "path": "lib/axios.js", "symbol": "createInstance", "line": 15 }
+        ],
+        "extraction_method": "api_header_pattern"
+      }
+    ],
+
+    "code_to_doc": [
+      {
+        "code_node": "0023",
+        "code_path": "lib/core/InterceptorManager.js",
+        "doc_refs": [
+          { "doc_id": "#a1b2c3", "path": "docs/guides/interceptors.md", "section": "Adding Interceptors" },
+          { "doc_id": "#x7y8z9", "path": "docs/api-reference.md", "section": "Request Interceptors" }
+        ],
+        "extraction_method": "reverse_lookup"
+      }
+    ]
+  },
+
+  "coverage": {
+    "symbols_with_docs": 45,
+    "symbols_without_docs": 12,
+    "docs_with_code_refs": 23,
+    "docs_without_code_refs": 5,
+    "total_links": 156
+  }
+}
+```
+
+### Link Extraction Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           LINK EXTRACTION PIPELINE                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ PHASE 1: Build Symbol Table from Code (PageIndex)                       │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  Input: pageindex.json (code tree)                                      │    │
+│  │                                                                         │    │
+│  │  Extract:                                                               │    │
+│  │  ├── Exported functions    → axios.get, axios.post, axios.create       │    │
+│  │  ├── Classes               → Axios, InterceptorManager, CancelToken    │    │
+│  │  ├── Methods               → interceptors.use, interceptors.eject      │    │
+│  │  ├── Types/Interfaces      → AxiosRequestConfig, AxiosResponse         │    │
+│  │  ├── Constants             → HttpStatusCode, METHOD_*                  │    │
+│  │  └── Module paths          → lib/core, lib/helpers, lib/adapters       │    │
+│  │                                                                         │    │
+│  │  Output: symbol_table.json                                              │    │
+│  │  {                                                                      │    │
+│  │    "axios.create": { node: "0012", path: "lib/axios.js", line: 15 },   │    │
+│  │    "InterceptorManager": { node: "0023", path: "lib/core/..." },       │    │
+│  │    ...                                                                  │    │
+│  │  }                                                                      │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ PHASE 2: Extract References from Documentation                          │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  For each doc in qmd collection:                                        │    │
+│  │                                                                         │    │
+│  │  A. API Headers (Markdown)                                              │    │
+│  │     Pattern: ### `axios.create(config)` or ## axios.get()               │    │
+│  │     → Match against symbol_table → Link to code node                    │    │
+│  │                                                                         │    │
+│  │  B. Inline Code References                                              │    │
+│  │     Pattern: `interceptors.use()` or `AxiosInstance`                    │    │
+│  │     → Match against symbol_table → Link to code node                    │    │
+│  │                                                                         │    │
+│  │  C. Code Block Analysis                                                 │    │
+│  │     ```javascript                                                       │    │
+│  │     axios.interceptors.request.use(config => {                          │    │
+│  │       // ...                                                            │    │
+│  │     });                                                                  │    │
+│  │     ```                                                                  │    │
+│  │     → Parse AST → Extract function calls → Match symbols                │    │
+│  │     → Links: interceptors, request, use                                 │    │
+│  │                                                                         │    │
+│  │  D. File Path References                                                │    │
+│  │     Pattern: "see `lib/core/Axios.js`" or "in the helpers directory"   │    │
+│  │     → Match against code tree paths → Link to directory/file node       │    │
+│  │                                                                         │    │
+│  │  E. Explicit Doc Links                                                  │    │
+│  │     Pattern: [Interceptors Guide](./interceptors.md)                    │    │
+│  │     → Cross-reference within docs                                       │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ PHASE 3: Extract References from Code                                   │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  For each file in repomix output:                                       │    │
+│  │                                                                         │    │
+│  │  A. JSDoc @see / @link tags                                             │    │
+│  │     /**                                                                 │    │
+│  │      * @see {@link docs/guides/interceptors.md}                         │    │
+│  │      */                                                                 │    │
+│  │     → Extract doc path → Link to qmd doc                                │    │
+│  │                                                                         │    │
+│  │  B. Comment References                                                  │    │
+│  │     // See: docs/api.md for usage                                       │    │
+│  │     # Reference: docs/configuration.md                                  │    │
+│  │     → Pattern match → Link to qmd doc                                   │    │
+│  │                                                                         │    │
+│  │  C. README/Doc Links in Code                                            │    │
+│  │     Look for markdown links in comments, docstrings                     │    │
+│  │     → Resolve relative paths → Link to qmd doc                          │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │ PHASE 4: Build Bidirectional Index                                      │    │
+│  ├─────────────────────────────────────────────────────────────────────────┤    │
+│  │                                                                         │    │
+│  │  1. Merge all extracted links                                           │    │
+│  │  2. Deduplicate (same doc→code pair from multiple extractions)          │    │
+│  │  3. Compute reverse mappings (code→doc from doc→code)                   │    │
+│  │  4. Calculate confidence scores based on extraction method              │    │
+│  │  5. Generate coverage statistics                                        │    │
+│  │                                                                         │    │
+│  │  Output: link_index.json                                                │    │
+│  │                                                                         │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Link Extraction Patterns
+
+```python
+# depindex/link_extractor.py
+
+import re
+from typing import List, Dict
+import ast
+
+class LinkExtractor:
+    """Extract doc↔code links from documentation and source files."""
+
+    def __init__(self, symbol_table: Dict, doc_index: Dict):
+        self.symbols = symbol_table
+        self.docs = doc_index
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # DOC → CODE EXTRACTION
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def extract_api_headers(self, markdown: str) -> List[Dict]:
+        """Extract API headers like ### `axios.create(config)`"""
+        links = []
+        # Match: ## axios.get() or ### `axios.create(config)`
+        pattern = r'^#{2,4}\s+`?(\w+(?:\.\w+)*)\s*\([^)]*\)`?'
+        for match in re.finditer(pattern, markdown, re.MULTILINE):
+            symbol = match.group(1)
+            if symbol in self.symbols:
+                links.append({
+                    "symbol": symbol,
+                    "code_node": self.symbols[symbol]["node_id"],
+                    "method": "api_header",
+                    "confidence": 0.95
+                })
+        return links
+
+    def extract_inline_code_refs(self, markdown: str) -> List[Dict]:
+        """Extract inline code like `interceptors.use()`"""
+        links = []
+        # Match backtick-wrapped identifiers
+        pattern = r'`(\w+(?:\.\w+)*)\(?[^`]*\)?`'
+        for match in re.finditer(pattern, markdown):
+            symbol = match.group(1).rstrip('()')
+            if symbol in self.symbols:
+                links.append({
+                    "symbol": symbol,
+                    "code_node": self.symbols[symbol]["node_id"],
+                    "method": "inline_code",
+                    "confidence": 0.85
+                })
+        return links
+
+    def extract_code_block_refs(self, markdown: str) -> List[Dict]:
+        """Parse code examples and extract function calls."""
+        links = []
+        # Extract code blocks
+        code_pattern = r'```(?:javascript|typescript|js|ts)?\n(.*?)```'
+        for match in re.finditer(code_pattern, markdown, re.DOTALL):
+            code = match.group(1)
+            # Extract function calls (simplified - use real parser for production)
+            call_pattern = r'(\w+(?:\.\w+)*)\s*\('
+            for call_match in re.finditer(call_pattern, code):
+                symbol = call_match.group(1)
+                # Normalize: axios.interceptors.request.use → interceptors.use
+                normalized = self._normalize_symbol(symbol)
+                if normalized in self.symbols:
+                    links.append({
+                        "symbol": normalized,
+                        "code_node": self.symbols[normalized]["node_id"],
+                        "method": "code_example",
+                        "confidence": 0.90,
+                        "context": code[:100]  # First 100 chars for context
+                    })
+        return links
+
+    def extract_file_refs(self, markdown: str) -> List[Dict]:
+        """Extract file/directory references like 'see lib/core/'"""
+        links = []
+        pattern = r'`((?:lib|src|packages)/[\w/.-]+)`'
+        for match in re.finditer(pattern, markdown):
+            path = match.group(1)
+            # Match against code tree paths
+            node = self._find_node_by_path(path)
+            if node:
+                links.append({
+                    "path": path,
+                    "code_node": node["node_id"],
+                    "method": "file_reference",
+                    "confidence": 0.95
+                })
+        return links
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # CODE → DOC EXTRACTION
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def extract_jsdoc_refs(self, code: str) -> List[Dict]:
+        """Extract @see and @link references from JSDoc comments."""
+        links = []
+        # Match @see {@link path} or @see path
+        pattern = r'@see\s+(?:\{@link\s+)?([^\s}]+)'
+        for match in re.finditer(pattern, code):
+            doc_path = match.group(1)
+            doc = self._find_doc_by_path(doc_path)
+            if doc:
+                links.append({
+                    "doc_path": doc_path,
+                    "doc_id": doc["doc_id"],
+                    "method": "jsdoc_see",
+                    "confidence": 0.98
+                })
+        return links
+
+    def extract_comment_refs(self, code: str) -> List[Dict]:
+        """Extract doc references from comments."""
+        links = []
+        patterns = [
+            r'//\s*[Ss]ee:?\s*(docs?/[\w/.-]+\.md)',
+            r'//\s*[Rr]ef(?:erence)?:?\s*(docs?/[\w/.-]+\.md)',
+            r'#\s*[Ss]ee:?\s*(docs?/[\w/.-]+\.md)',  # Python comments
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, code):
+                doc_path = match.group(1)
+                doc = self._find_doc_by_path(doc_path)
+                if doc:
+                    links.append({
+                        "doc_path": doc_path,
+                        "doc_id": doc["doc_id"],
+                        "method": "comment_reference",
+                        "confidence": 0.90
+                    })
+        return links
+
+
+# Usage:
+extractor = LinkExtractor(symbol_table, doc_index)
+
+# Process all docs
+for doc in docs:
+    links = []
+    links.extend(extractor.extract_api_headers(doc.content))
+    links.extend(extractor.extract_inline_code_refs(doc.content))
+    links.extend(extractor.extract_code_block_refs(doc.content))
+    links.extend(extractor.extract_file_refs(doc.content))
+    doc_to_code_links[doc.id] = links
+
+# Process all code files
+for file in code_files:
+    links = []
+    links.extend(extractor.extract_jsdoc_refs(file.content))
+    links.extend(extractor.extract_comment_refs(file.content))
+    code_to_doc_links[file.node_id] = links
+```
+
+### Using Links at Query Time
+
+```python
+class LinkedDependencySearch:
+    """Search with explicit link traversal."""
+
+    def __init__(self, deps_dir: str):
+        self.code_index = PageIndex(deps_dir)
+        self.link_index = LinkIndex(deps_dir)
+
+    def search_with_links(self, query: str, dependency: str) -> dict:
+        """Search docs, then follow links to code."""
+
+        # Step 1: Search documentation
+        doc_results = qmd_search(query, f"{dependency}-docs")
+
+        # Step 2: For each doc result, get linked code
+        enriched_results = []
+        for doc in doc_results:
+            linked_code = self.link_index.get_code_for_doc(doc["doc_id"])
+
+            enriched_results.append({
+                "doc": doc,
+                "linked_code": [
+                    {
+                        "node": self.code_index.get_node(link["code_node"]),
+                        "symbol": link["symbol"],
+                        "confidence": link["confidence"],
+                        "link_type": link["method"]
+                    }
+                    for link in linked_code
+                ]
+            })
+
+        return {
+            "query": query,
+            "results": enriched_results,
+            # Also include coverage info
+            "unlinked_code_mentions": self._find_unlinked_symbols(doc_results)
+        }
+
+    def get_docs_for_symbol(self, symbol: str, dependency: str) -> list:
+        """Reverse lookup: find all docs that mention a symbol."""
+        code_node = self.code_index.find_by_symbol(symbol)
+        if not code_node:
+            return []
+
+        return self.link_index.get_docs_for_code(code_node["node_id"])
+
+
+# Agent interaction with links:
+
+search = LinkedDependencySearch(".dependencies")
+
+# Query: "How do I add request interceptors?"
+results = search.search_with_links("add request interceptors", "axios")
+
+# Results now include explicit links:
+# {
+#   "results": [
+#     {
+#       "doc": {
+#         "doc_id": "#a1b2",
+#         "title": "Interceptors Guide",
+#         "score": 0.92
+#       },
+#       "linked_code": [
+#         {
+#           "node": { "title": "InterceptorManager", "path": "lib/core/..." },
+#           "symbol": "interceptors.use",
+#           "confidence": 0.95,
+#           "link_type": "code_example"
+#         },
+#         {
+#           "node": { "title": "Axios.js", "path": "lib/core/Axios.js" },
+#           "symbol": "Axios.interceptors",
+#           "confidence": 0.90,
+#           "link_type": "inline_code"
+#         }
+#       ]
+#     }
+#   ]
+# }
+
+# Agent can now:
+# 1. Read the doc (from qmd)
+# 2. DIRECTLY jump to linked code (no fuzzy search needed)
+# 3. Get implementation details with exact line numbers
+```
+
+### Link Quality Indicators
+
+```yaml
+# Link confidence scoring:
+
+confidence_weights:
+  # Explicit references (high confidence)
+  jsdoc_see: 0.98          # @see tag is intentional
+  api_header: 0.95         # Markdown API header matches symbol
+  file_reference: 0.95     # Explicit file path mention
+
+  # Derived references (medium confidence)
+  code_example: 0.90       # Function call in code block
+  comment_reference: 0.90  # Comment mentions doc path
+  inline_code: 0.85        # `symbol` in text
+
+  # Inferred references (lower confidence)
+  symbol_mention: 0.70     # Plain text mentions symbol name
+  fuzzy_match: 0.50        # Similar names, not exact
+
+# Coverage thresholds:
+coverage_targets:
+  symbols_documented: 0.80  # 80% of exports should have doc links
+  docs_linked: 0.90         # 90% of docs should link to code
+  warn_orphan_docs: true    # Warn about docs with no code refs
+  warn_undocumented: true   # Warn about exports with no doc refs
+```
+
+### Directory Structure with Links
+
+```
+.dependencies/axios/
+├── code/
+│   ├── repomix-output.xml
+│   └── pageindex.json
+├── docs/
+│   ├── guides/
+│   └── api-reference.md
+├── link_index.json          # ← NEW: Bidirectional links
+└── symbol_table.json        # ← NEW: Exported symbols registry
+```
 
 ### For Coding Agents
 
@@ -1052,26 +1538,42 @@ Agent implements:
 ### Phase 1: Core Integration (MVP)
 - [ ] Create `page_index_repomix.py` with XML parsing
 - [ ] Add basic code structure extraction (Python/JS/TS)
+- [ ] Build symbol table from PageIndex output (exports, classes, functions)
 - [ ] Integrate into `run_pageindex.py` CLI
 - [ ] Document qmd setup workflow for dependencies
 - [ ] Build example index of axios (code + docs)
 
-### Phase 2: Unified Search
-- [ ] Create `depindex` unified search module
-- [ ] Implement combined search API (code + docs)
-- [ ] Add result merging and ranking
-- [ ] Create MCP server for agent integration
+### Phase 2: Link Extraction
+- [ ] Implement `link_extractor.py` module
+- [ ] Doc→Code: API header pattern matching (`### axios.create()`)
+- [ ] Doc→Code: Inline code reference extraction (`` `symbol` ``)
+- [ ] Doc→Code: Code block AST parsing for function calls
+- [ ] Doc→Code: File path reference matching
+- [ ] Code→Doc: JSDoc @see/@link extraction
+- [ ] Code→Doc: Comment reference pattern matching
+- [ ] Build bidirectional link index (link_index.json)
+- [ ] Add link confidence scoring
 
-### Phase 3: Automation
+### Phase 3: Unified Search with Links
+- [ ] Create `depindex` unified search module
+- [ ] Implement link-aware search (doc → linked code)
+- [ ] Implement reverse lookup (code symbol → related docs)
+- [ ] Add result enrichment with linked context
+- [ ] Create MCP server for agent integration
+- [ ] Add coverage reporting (unlinked symbols, orphan docs)
+
+### Phase 4: Automation
 - [ ] Script to auto-index from package.json/requirements.txt
 - [ ] Auto-download docs from common sources (GitHub, npm, PyPI)
-- [ ] Incremental update detection
+- [ ] Incremental update detection (re-link on changes)
+- [ ] Link validation (detect broken references)
 
-### Phase 4: Polish & Distribution
-- [ ] Pre-built index format specification
+### Phase 5: Polish & Distribution
+- [ ] Pre-built index format specification (including links)
 - [ ] Index publishing/sharing mechanism
-- [ ] VS Code extension for browsing indexes
+- [ ] VS Code extension for browsing indexes + links
 - [ ] Demo notebook with full agent workflow
+- [ ] Link coverage dashboard / quality metrics
 
 ---
 
@@ -1086,9 +1588,11 @@ npm install -g qmd  # or: cargo install qmd
 # 2. Create dependency knowledge base
 mkdir -p .dependencies/axios/{code,docs}
 
-# 3. Index code
+# 3. Index code (generates pageindex.json + symbol_table.json)
 npx repomix --remote axios/axios -o .dependencies/axios/code/repomix-output.xml
-python -m pageindex --repomix .dependencies/axios/code/repomix-output.xml
+python -m pageindex --repomix .dependencies/axios/code/repomix-output.xml \
+  --output .dependencies/axios/code/pageindex.json \
+  --symbols .dependencies/axios/code/symbol_table.json
 
 # 4. Add documentation
 git clone --depth 1 https://github.com/axios/axios /tmp/axios
@@ -1096,9 +1600,29 @@ cp -r /tmp/axios/docs/* .dependencies/axios/docs/
 qmd collection add .dependencies/axios/docs --name axios-docs
 qmd embed
 
-# 5. Search!
-# Code: python -m pageindex search "interceptors" --dep axios
-# Docs: qmd query "how to use interceptors" -c axios-docs
+# 5. Generate bidirectional links
+python -m depindex link \
+  --code-index .dependencies/axios/code/pageindex.json \
+  --symbols .dependencies/axios/code/symbol_table.json \
+  --docs-dir .dependencies/axios/docs \
+  --output .dependencies/axios/link_index.json
+
+# Link extraction output:
+# ✓ Found 45 exported symbols
+# ✓ Extracted 78 doc→code links from 12 documents
+# ✓ Extracted 23 code→doc links from source files
+# ✓ Coverage: 89% of symbols have documentation
+# ✓ Saved to .dependencies/axios/link_index.json
+
+# 6. Search with links!
+python -m depindex search "interceptors" --dep axios
+
+# Returns:
+# DOC: "Interceptors Guide" (score: 0.92)
+#   └─→ LINKED CODE:
+#       ├─ InterceptorManager.js:15 (use method) [confidence: 0.95]
+#       ├─ InterceptorManager.js:32 (eject method) [confidence: 0.95]
+#       └─ Axios.js:42 (interceptors property) [confidence: 0.90]
 ```
 
 ---
